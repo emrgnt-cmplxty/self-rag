@@ -1,9 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
 import os
 import pickle
 from typing import List, Tuple
@@ -14,14 +8,24 @@ from tqdm import tqdm
 
 
 class Indexer(object):
-    def __init__(self, vector_sz, n_subquantizers=0, n_bits=8):
+    def __init__(self, vector_sz, n_subquantizers=0, n_bits=8, use_gpu=False):
+        self.use_gpu = use_gpu
+
         if n_subquantizers > 0:
             self.index = faiss.IndexPQ(
                 vector_sz, n_subquantizers, n_bits, faiss.METRIC_INNER_PRODUCT
             )
         else:
             self.index = faiss.IndexFlatIP(vector_sz)
+
         self.index_id_to_db_id = []
+
+        # If using GPU, set up GPU resources and transfer index to GPU
+        if self.use_gpu:
+            self.res = faiss.StandardGpuResources()
+            self.gpu_index = faiss.index_cpu_to_gpu(self.res, 0, self.index)
+        else:
+            self.gpu_index = None
 
     def index_data(self, ids, embeddings, chunk_size=100000):
         total_len = len(embeddings)
@@ -32,10 +36,11 @@ class Indexer(object):
 
             self._update_id_mapping(chunk_ids)
 
-            if not self.index.is_trained:
-                self.index.train(chunk_embeddings)
-
-            self.index.add(chunk_embeddings)
+            # Use GPU index if set, otherwise use the regular index
+            index_to_use = self.gpu_index if self.use_gpu else self.index
+            if not index_to_use.is_trained:
+                index_to_use.train(chunk_embeddings)
+            index_to_use.add(chunk_embeddings)
 
             # Optional print statement for tracking progress
             print(f"Indexed {end_idx}/{total_len} embeddings.")
@@ -45,12 +50,16 @@ class Indexer(object):
     ) -> List[Tuple[List[object], List[float]]]:
         query_vectors = query_vectors.astype("float32")
         result = []
+
+        # Use GPU index if set, otherwise use the regular index
+        index_to_use = self.gpu_index if self.use_gpu else self.index
+
         nbatch = (len(query_vectors) - 1) // index_batch_size + 1
         for k in tqdm(range(nbatch)):
             start_idx = k * index_batch_size
             end_idx = min((k + 1) * index_batch_size, len(query_vectors))
             q = query_vectors[start_idx:end_idx]
-            scores, indexes = self.index.search(q, top_docs)
+            scores, indexes = index_to_use.search(q, top_docs)
             # convert to external ids
             db_ids = [
                 [str(self.index_id_to_db_id[i]) for i in query_top_idxs]
@@ -64,7 +73,10 @@ class Indexer(object):
         meta_file = os.path.join(dir_path, "index_meta.faiss")
         print(f"Serializing index to {index_file}, meta data to {meta_file}")
 
-        faiss.write_index(self.index, index_file)
+        # Use GPU index if set, otherwise use the regular index
+        index_to_use = self.gpu_index if self.use_gpu else self.index
+        faiss.write_index(index_to_use, index_file)
+
         with open(meta_file, mode="wb") as f:
             pickle.dump(self.index_id_to_db_id, f)
 
@@ -73,16 +85,27 @@ class Indexer(object):
         meta_file = os.path.join(dir_path, "index_meta.faiss")
         print(f"Loading index from {index_file}, meta data from {meta_file}")
 
-        self.index = faiss.read_index(index_file)
+        # If using GPU, load index into GPU, otherwise load regularly
+        if self.use_gpu:
+            self.gpu_index = faiss.read_index(index_file, faiss.IO_FLAG_ONDISK_SAME_DIR)
+            self.gpu_index = faiss.index_cpu_to_gpu(self.res, 0, self.gpu_index)
+        else:
+            self.index = faiss.read_index(index_file, faiss.IO_FLAG_ONDISK_SAME_DIR)
+            self.gpu_index = None
+
         print(
             "Loaded index of type %s and size %d"
-            % (type(self.index), self.index.ntotal)
+            % (
+                type(self.gpu_index if self.use_gpu else self.index),
+                (self.gpu_index if self.use_gpu else self.index).ntotal,
+            )
         )
 
         with open(meta_file, "rb") as reader:
             self.index_id_to_db_id = pickle.load(reader)
         assert (
-            len(self.index_id_to_db_id) == self.index.ntotal
+            len(self.index_id_to_db_id)
+            == (self.gpu_index if self.use_gpu else self.index).ntotal
         ), "Deserialized index_id_to_db_id should match faiss index size"
 
     def _update_id_mapping(self, db_ids: List):

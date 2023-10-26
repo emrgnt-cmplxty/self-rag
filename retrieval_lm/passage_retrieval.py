@@ -120,7 +120,10 @@ class Retriever:
             self.model = self.model.half()
 
         self.index = src.index.Indexer(
-            self.args.projection_size, self.args.n_subquantizers, self.args.n_bits
+            self.args.projection_size,
+            self.args.n_subquantizers,
+            self.args.n_bits,
+            self.args.search_on_gpu,
         )
 
         # index all passages
@@ -252,7 +255,7 @@ if __name__ == "__main__":
         default="passages.db",
         help="Path to SQLite database storing the passages.",
     )
-
+    parser.add_argument("--search_on_gpu", action="store_true", help="Search on GPU")
     args = parser.parse_args()
     src.slurm.init_distributed_mode(args)
     main(args)
