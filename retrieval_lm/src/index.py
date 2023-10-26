@@ -75,7 +75,8 @@ class Indexer(object):
 
         self.index = faiss.read_index(index_file)
         print(
-            "Loaded index of type %s and size %d", type(self.index), self.index.ntotal
+            "Loaded index of type %s and size %d"
+            % (type(self.index), self.index.ntotal)
         )
 
         with open(meta_file, "rb") as reader:

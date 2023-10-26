@@ -141,6 +141,7 @@ class Retriever:
                 self.index.serialize(embeddings_dir)
 
     def search_document(self, query, top_n=10):
+        print("Embedding the query and searching the index")
         questions_embedding = self.embed_queries(self.args, [query])
 
         # get top k results
@@ -150,7 +151,7 @@ class Retriever:
         )
         print(f"Search time: {time.time()-start_time_retrieval:.1f} s.")
 
-        return self.add_passages(self.passage_id_map, top_ids_and_scores)[:top_n]
+        return self.add_passages(top_ids_and_scores)[:top_n]
 
 
 def main(args):
@@ -166,7 +167,7 @@ if __name__ == "__main__":
         "--query",
         type=str,
         default=None,
-        help=".json file containing question and answers, similar format to reader data",
+        help="The query for the retriever.",
     )
     parser.add_argument(
         "--passages", type=str, default=None, help="Path to passages (.tsv file)"
