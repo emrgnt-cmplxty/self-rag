@@ -10,7 +10,7 @@ import numpy as np
 import numpy.random
 import logging
 from collections import defaultdict
-import torch.distributed as dist
+import sqlite3
 
 from src import dist_utils
 
@@ -33,7 +33,9 @@ def load_dataset(data_path, loading_mode):
     files.sort()
     tensors = []
     if loading_mode == "split":
-        files_split = list(np.array_split(files, dist_utils.get_world_size()))[dist_utils.get_rank()]
+        files_split = list(np.array_split(files, dist_utils.get_world_size()))[
+            dist_utils.get_rank()
+        ]
         for filepath in files_split:
             try:
                 tensors.append(torch.load(filepath, map_location="cpu"))
@@ -52,7 +54,6 @@ def load_dataset(data_path, loading_mode):
 
 class MultiDataset(torch.utils.data.Dataset):
     def __init__(self, datasets):
-
         self.datasets = datasets
         self.prob = [1 / len(self.datasets) for _ in self.datasets]
         self.dataset_ids = list(self.datasets.keys())
@@ -73,7 +74,6 @@ class MultiDataset(torch.utils.data.Dataset):
             dataset.generate_offset()
 
     def set_prob(self, coeff=0.0):
-
         prob = np.array([float(len(dataset)) for _, dataset in self.datasets.items()])
         prob /= prob.sum()
         prob = np.array([p**coeff for p in prob])
@@ -85,7 +85,6 @@ class Dataset(torch.utils.data.Dataset):
     """Monolingual dataset based on a list of paths"""
 
     def __init__(self, data, chunk_length, tokenizer, opt):
-
         self.data = data
         self.chunk_length = chunk_length
         self.tokenizer = tokenizer
@@ -102,9 +101,13 @@ class Dataset(torch.utils.data.Dataset):
         q_tokens = randomcrop(tokens, self.opt.ratio_min, self.opt.ratio_max)
         k_tokens = randomcrop(tokens, self.opt.ratio_min, self.opt.ratio_max)
         q_tokens = apply_augmentation(q_tokens, self.opt)
-        q_tokens = add_bos_eos(q_tokens, self.tokenizer.bos_token_id, self.tokenizer.eos_token_id)
+        q_tokens = add_bos_eos(
+            q_tokens, self.tokenizer.bos_token_id, self.tokenizer.eos_token_id
+        )
         k_tokens = apply_augmentation(k_tokens, self.opt)
-        k_tokens = add_bos_eos(k_tokens, self.tokenizer.bos_token_id, self.tokenizer.eos_token_id)
+        k_tokens = add_bos_eos(
+            k_tokens, self.tokenizer.bos_token_id, self.tokenizer.eos_token_id
+        )
 
         return {"q_tokens": q_tokens, "k_tokens": k_tokens}
 
@@ -117,7 +120,6 @@ class Collator(object):
         self.opt = opt
 
     def __call__(self, batch_examples):
-
         batch = defaultdict(list)
         for example in batch_examples:
             for k, v in example.items():
@@ -135,7 +137,6 @@ class Collator(object):
 
 
 def randomcrop(x, ratio_min, ratio_max):
-
     ratio = random.uniform(ratio_min, ratio_max)
     length = int(len(x) * ratio)
     start = random.randint(0, len(x) - length)
@@ -170,7 +171,9 @@ def deleteword(x, p=0.1):
 
 def replaceword(x, min_random, max_random, p=0.1):
     mask = np.random.rand(len(x))
-    x = [e if m > p else random.randint(min_random, max_random) for e, m in zip(x, mask)]
+    x = [
+        e if m > p else random.randint(min_random, max_random) for e, m in zip(x, mask)
+    ]
     return x
 
 
@@ -197,7 +200,12 @@ def apply_augmentation(x, opt):
         return torch.tensor(maskword(x, mask_id=opt.mask_id, p=opt.prob_augmentation))
     elif opt.augmentation == "replace":
         return torch.tensor(
-            replaceword(x, min_random=opt.start_id, max_random=opt.vocab_size - 1, p=opt.prob_augmentation)
+            replaceword(
+                x,
+                min_random=opt.start_id,
+                max_random=opt.vocab_size - 1,
+                p=opt.prob_augmentation,
+            )
         )
     elif opt.augmentation == "delete":
         return torch.tensor(deleteword(x, p=opt.prob_augmentation))
@@ -219,26 +227,92 @@ def add_bos_eos(x, bos_token_id, eos_token_id):
     elif bos_token_id is None and eos_token_id is None:
         pass
     else:
-        x = torch.cat([torch.tensor([bos_token_id]), x.clone().detach(), torch.tensor([eos_token_id])])
+        x = torch.cat(
+            [
+                torch.tensor([bos_token_id]),
+                x.clone().detach(),
+                torch.tensor([eos_token_id]),
+            ]
+        )
     return x
 
 
-# Used for passage retrieval
-def load_passages(path):
-    if not os.path.exists(path):
-        logger.info(f"{path} does not exist")
-        return
-    logger.info(f"Loading passages from: {path}")
-    passages = []
+def fetch_passages_from_db(db_path, doc_ids):
+    """
+    Fetch passages from an SQLite database given a list of document IDs.
+
+    :param db_path: Path to the SQLite database.
+    :param doc_ids: List of document IDs for which passages are to be fetched.
+    :return: List of passages corresponding to the provided doc_ids.
+    """
+    # Connect to the SQLite database
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Prepare the query
+    placeholders = ", ".join(["?"] * len(doc_ids))
+    query = f"SELECT passage FROM passages WHERE id IN ({placeholders})"
+
+    # Execute the query
+    cursor.execute(query, doc_ids)
+    results = cursor.fetchall()
+
+    # Close the connection
+    conn.close()
+
+    # Return the fetched passages
+    passages = [result[0] for result in results]
+    return passages
+
+
+def initialize_database(db_path):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS passages (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            text TEXT
+        )
+    """
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_passages_to_db(path, db_path, force_reload=False):
+    if os.path.exists(db_path) and not force_reload:
+        # Check if the database already has records
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM passages")
+        count = c.fetchone()[0]
+        conn.close()
+        if count > 0:
+            print(
+                f"Database at {db_path} already loaded with {count} records. Skipping re-loading. Use --force_reload to override."
+            )
+            return
+
+    conn = initialize_database(db_path)
+    c = conn.cursor()
+
     with open(path) as fin:
         if path.endswith(".jsonl"):
-            for k, line in enumerate(fin):
+            for line in fin:
                 ex = json.loads(line)
-                passages.append(ex)
+                c.execute(
+                    "INSERT INTO passages (id, title, text) VALUES (?, ?, ?)",
+                    (ex["id"], ex["title"], ex["text"]),
+                )
         else:
             reader = csv.reader(fin, delimiter="\t")
-            for k, row in enumerate(reader):
-                if not row[0] == "id":
-                    ex = {"id": row[0], "title": row[2], "text": row[1]}
-                    passages.append(ex)
-    return passages
+            for row in reader:
+                if row[0] != "id":
+                    c.execute(
+                        "INSERT INTO passages (id, title, text) VALUES (?, ?, ?)",
+                        (row[0], row[2], row[1]),
+                    )
+    conn.commit()
+    conn.close()
