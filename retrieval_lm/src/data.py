@@ -1,5 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
+from tqdm import tqdm
 import os
 import glob
 import torch
@@ -15,6 +16,77 @@ import sqlite3
 from src import dist_utils
 
 logger = logging.getLogger(__name__)
+
+
+def fetch_passages_from_db(db_path, doc_ids):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    placeholders = ", ".join(["?"] * len(doc_ids))
+    query = f"SELECT text FROM passages WHERE id IN ({placeholders})"  # fix column name to "text"
+
+    cursor.execute(query, doc_ids)
+    results = cursor.fetchall()
+    conn.close()
+
+    passages = [result[0] for result in results]
+    return passages
+
+
+def initialize_database(db_path):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS passages (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            text TEXT
+        )
+    """
+    )
+    conn.commit()
+    return conn  # Return the connection object
+
+
+def load_passages_to_db(path, db_path, force_reload=False):
+    if os.path.exists(db_path) and not force_reload:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        try:
+            c.execute("SELECT COUNT(*) FROM passages")
+            count = c.fetchone()[0]
+            if count > 0:
+                print(
+                    f"Database at {db_path} already loaded with {count} records. Skipping re-loading. Use --force_reload to override."
+                )
+                conn.close()
+                return
+        except sqlite3.OperationalError:  # Catch exception if table doesn't exist
+            pass
+        conn.close()
+
+    conn = initialize_database(db_path)
+    c = conn.cursor()
+
+    with open(path) as fin:
+        if path.endswith(".jsonl"):
+            for line in tqdm(fin):
+                ex = json.loads(line)
+                c.execute(
+                    "INSERT INTO passages (id, title, text) VALUES (?, ?, ?)",
+                    (ex["id"], ex["title"], ex["text"]),
+                )
+        else:
+            reader = csv.reader(fin, delimiter="\t")
+            for row in tqdm(reader):
+                if row[0] != "id":
+                    c.execute(
+                        "INSERT INTO passages (id, title, text) VALUES (?, ?, ?)",
+                        (row[0], row[1], row[2]),  # fixed order of insertion
+                    )
+    conn.commit()
+    conn.close()
 
 
 def load_data(opt, tokenizer):
@@ -235,84 +307,3 @@ def add_bos_eos(x, bos_token_id, eos_token_id):
             ]
         )
     return x
-
-
-def fetch_passages_from_db(db_path, doc_ids):
-    """
-    Fetch passages from an SQLite database given a list of document IDs.
-
-    :param db_path: Path to the SQLite database.
-    :param doc_ids: List of document IDs for which passages are to be fetched.
-    :return: List of passages corresponding to the provided doc_ids.
-    """
-    # Connect to the SQLite database
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Prepare the query
-    placeholders = ", ".join(["?"] * len(doc_ids))
-    query = f"SELECT passage FROM passages WHERE id IN ({placeholders})"
-
-    # Execute the query
-    cursor.execute(query, doc_ids)
-    results = cursor.fetchall()
-
-    # Close the connection
-    conn.close()
-
-    # Return the fetched passages
-    passages = [result[0] for result in results]
-    return passages
-
-
-def initialize_database(db_path):
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS passages (
-            id TEXT PRIMARY KEY,
-            title TEXT,
-            text TEXT
-        )
-    """
-    )
-    conn.commit()
-    conn.close()
-
-
-def load_passages_to_db(path, db_path, force_reload=False):
-    if os.path.exists(db_path) and not force_reload:
-        # Check if the database already has records
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM passages")
-        count = c.fetchone()[0]
-        conn.close()
-        if count > 0:
-            print(
-                f"Database at {db_path} already loaded with {count} records. Skipping re-loading. Use --force_reload to override."
-            )
-            return
-
-    conn = initialize_database(db_path)
-    c = conn.cursor()
-
-    with open(path) as fin:
-        if path.endswith(".jsonl"):
-            for line in fin:
-                ex = json.loads(line)
-                c.execute(
-                    "INSERT INTO passages (id, title, text) VALUES (?, ?, ?)",
-                    (ex["id"], ex["title"], ex["text"]),
-                )
-        else:
-            reader = csv.reader(fin, delimiter="\t")
-            for row in reader:
-                if row[0] != "id":
-                    c.execute(
-                        "INSERT INTO passages (id, title, text) VALUES (?, ?, ?)",
-                        (row[0], row[2], row[1]),
-                    )
-    conn.commit()
-    conn.close()

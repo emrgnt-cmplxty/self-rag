@@ -153,19 +153,6 @@ class Retriever:
         return self.add_passages(self.passage_id_map, top_ids_and_scores)[:top_n]
 
 
-def load_data(data_path):
-    if data_path.endswith(".json"):
-        with open(data_path, "r") as fin:
-            data = json.load(fin)
-    elif data_path.endswith(".jsonl"):
-        data = []
-        with open(data_path, "r") as fin:
-            for example in fin:
-                example = json.loads(example)
-                data.append(example)
-    return data
-
-
 def main(args):
     retriever = Retriever(args)
     retriever.setup_retriever()
