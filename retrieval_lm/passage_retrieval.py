@@ -103,6 +103,13 @@ class Retriever:
         return src.data.fetch_passages_from_db(self.args.db_path, doc_ids)
 
     def setup_retriever(self):
+        print("loading passages")
+        src.data.load_passages_to_db(
+            self.args.passages, self.args.db_path, force_reload=args.force_reload
+        )
+
+        print("passages have been loaded")
+
         print(f"Loading model from: {self.args.model_name_or_path}")
         self.model, self.tokenizer, _ = src.contriever.load_retriever(
             self.args.model_name_or_path
@@ -132,13 +139,6 @@ class Retriever:
             print(f"Indexing time: {time.time()-start_time_indexing:.1f} s.")
             if self.args.save_or_load_index:
                 self.index.serialize(embeddings_dir)
-
-        print("loading passages")
-        src.data.load_passages_to_db(
-            self.args.passages, self.args.db_path, force_reload=args.force_reload
-        )
-
-        print("passages have been loaded")
 
     def search_document(self, query, top_n=10):
         questions_embedding = self.embed_queries(self.args, [query])
