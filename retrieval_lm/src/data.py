@@ -18,33 +18,19 @@ from src import dist_utils
 logger = logging.getLogger(__name__)
 
 
-# def fetch_passages_from_db(db_path, doc_ids):
-#     conn = sqlite3.connect(db_path)
-#     cursor = conn.cursor()
-
-#     placeholders = ", ".join(["?"] * len(doc_ids))
-#     query = f"SELECT text FROM passages WHERE id IN ({placeholders})"  # fix column name to "text"
-
-#     cursor.execute(query, doc_ids)
-#     results = cursor.fetchall()
-#     conn.close()
-
-#     # passages = [result[0] for result in results]
-#     return results
-
-
 def fetch_passages_from_db(db_path, doc_ids):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     placeholders = ", ".join(["?"] * len(doc_ids))
-    query = f"SELECT title, text FROM passages WHERE id IN ({placeholders})"  # fetching both title and text
+    query = f"SELECT id, title, text FROM passages WHERE id IN ({placeholders})"  # fetching id, title, and text
 
     cursor.execute(query, doc_ids)
     results = cursor.fetchall()
     conn.close()
 
-    return results
+    # Convert the results to a list of dictionaries
+    return [{"id": row[0], "title": row[1], "text": row[2]} for row in results]
 
 
 def initialize_database(db_path):
